@@ -51,6 +51,7 @@ from functools import wraps
 
 # Create Library
 import createlib as cl
+from createlib.create_oi import CHARGING_STATE
 
 try:
     import serial
@@ -64,6 +65,7 @@ TEXTHEIGHT = 24
 VELOCITYCHANGE = 200
 ROTATIONCHANGE = 300
 DOCK_TIMEOUT = 30  # Timeout for docking in seconds
+LIGHTS_INTERVAL = 2
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -87,7 +89,9 @@ class TetheredDriveApp(tk.Tk):
         self.robot = None
         self.velocity = 0
         self.rotation = 0
+        
         # custom variables
+        self.lights = 1
 
         self._setup_ui()
         self.bind("<KeyPress>", self.handle_keypress)
@@ -123,7 +127,11 @@ class TetheredDriveApp(tk.Tk):
             "C": "Clean",
             "D": "Dock",
             "R": "Reset",
-            "B": "Sensor Dump",
+            "A": "Sensor Dump",
+            "B": "Bumps and Wheeldrops",
+            "I": "Internal Info",
+            "W": "Wall and Cliff Sensors",
+            "L": "Light Show",
             "Space": "Beep",
             "Arrows": "Motion",
             "Escape": "Quick Shutdown",
@@ -141,7 +149,11 @@ class TetheredDriveApp(tk.Tk):
             "C": lambda: self.robot.clean(),
             "R": lambda: self.robot.reset(),
             "SPACE": lambda: self._beep_song(),
-            "B": lambda: logging.info(self._format_sensor_data(self.robot.get_sensors())),
+            "A": lambda: logging.info(self._format_sensor_data(self.robot.get_sensors())),
+            "B": lambda: self.display_bumps_wheeldrops(),
+            "I": lambda: self.display_internal_info(),
+            "W": lambda: self.display_wall_cliffs(),
+            "L": lambda: self.toggle_lights(),
             "UP": lambda: self._set_motion(velocity=VELOCITYCHANGE),
             "DOWN": lambda: self._set_motion(velocity=-VELOCITYCHANGE),
             "LEFT": lambda: self._set_motion(rotation=ROTATIONCHANGE),
@@ -193,6 +205,8 @@ class TetheredDriveApp(tk.Tk):
             port = simpledialog.askstring('Port?', 'Enter COM port to open.\nAvailable options:\n' + '\n'.join(ports))
             if port:
                 self.robot = cl.Create2(port=port, baud=115200)
+                # Initalize but do not start thread timers
+                self.lights_timer = cl.RepeatTimer(interval=LIGHTS_INTERVAL, function=self.lightshow, autostart=False)
                 messagebox.showinfo('Connected', "Connection succeeded!")
                 logging.info(f"Connected to robot on {port}")
         except Exception as e:
@@ -253,6 +267,82 @@ class TetheredDriveApp(tk.Tk):
         beep_song = [64, 16]
         self.robot.createSong(3, beep_song)
         self.robot.playSong(3)
+    
+
+    # ----- Sensor Getters --------
+    def get_sensors(self, sensor=None):
+        """ Returns specified sensor value or all sensor values as a dictionary."""
+        return self.robot.get_sensors()._asdict() if not sensor else self.robot.get_sensors()._asdict()[sensor]
+
+    def get_light_bumper(self):
+        """Returns the high resolution light bumper values as a list."""
+        sensors = self.get_sensors()
+        return [sensors["light_bumper_left"], sensors["light_bumper_front_left"], sensors["light_bumper_center_left"], 
+                sensors["light_bumper_center_right"], sensors["light_bumper_front_right"],sensors["light_bumper_right"]]
+
+    # ----- Tkinter Display Sensor Values --------
+    def _decode_charger_state(self, code):
+        """Returns the associated charging state string based on the given value (0-5)."""
+        return {state.value: state.name.replace("_", " ").title() for state in CHARGING_STATE}[code]
+    
+    def display_bumps_wheeldrops(self):
+        """Displays the Bumps and Wheeldrops sensor values in a Tkinter window."""
+        sensors = self.get_sensors("bumps_wheeldrops")
+        info_string = (
+            f'\nLeft Wheel: {"Dropped" if sensors.wheeldrop_left else "Raised"}'
+            f'\nRight Wheel: {"Dropped" if sensors.wheeldrop_right else "Raised"}'
+            f'\nLeft Bump: {"Bump" if sensors.bump_left else "No Bump"}'
+            f'\nRight Bump: {"Bump" if sensors.bump_right else "No Bump"}'
+        )
+        messagebox.showinfo("Bumps and Wheeldrops", info_string)
+    
+    def display_internal_info(self):
+        """Displays internal information related sensor values in a Tkinter window."""
+        sensors = self.get_sensors()
+        info_string = (
+            f'\nCharger State: {self._decode_charger_state(sensors["charger_state"])}'
+            f'\nVoltage: {sensors["voltage"]} mV'
+            f'\nCurrent: {sensors["current"]} mA'
+            f'\nTemperature: {sensors["temperature"]} degrees Celsius'
+            f'\nBattery Charge: {sensors["battery_charge"]} mAh'
+            f'\nBattery Capacity: {sensors["battery_capacity"]} mAh'
+        )
+        messagebox.showinfo("Interal Information", info_string)
+    
+    def display_wall_cliffs(self):
+        """Displays Wall and Cliffs sensor values in a Tkinter window."""
+        sensors = self.get_sensors()
+        info_string = (
+            f'\nWall Signal: {sensors["light_bumper_right"]}'
+            f'\nCliff Left Signal: {sensors["cliff_left_signal"]}'
+            f'\nCliff Front Left Signal: {sensors["cliff_front_left_signal"]}'
+            f'\nCliff Front Right Signal: {sensors["cliff_front_right_signal"]}'
+            f'\nCliff Right Signal: {sensors["cliff_right_signal"]}'
+        )
+        messagebox.showinfo("Wall and Cliffs", info_string)
+
+    # ----- Lights --------
+    def toggle_lights(self):
+        """Starts the periodic timer for the lights show if stopped, or stops/pauses it if started."""
+        self.lights_timer.start() if self.lights_timer._stopped else self.lights_timer.stop()
+
+    def lightshow(self):
+        """ Turns on one of two lighting configurations based on the value of self.lights.
+    
+        Value of self.lights:
+            - 1: Debris, Check Robot, and Power (RED, full intensity) 
+            - 0: Clean and Dock
+        """
+        if self.lights:
+            # Turn on the Debris and Check Robot LEDs, and set Power LED to full intensity RED
+            self.robot.led(led_bits=9, power_color=255, power_intensity=255)
+        else:
+            # Turn on the Clean and Dock LEDs, and turn off the Power LED
+            self.robot.led(led_bits=6, power_color=0, power_intensity=0)
+        
+        # Toggle/switch configurations
+        self.lights ^= 1
+
 
     # ----------------------- Main Driver ------------------------------
 if __name__ == "__main__":
