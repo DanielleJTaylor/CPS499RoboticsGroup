@@ -51,7 +51,7 @@ from functools import wraps
 
 # Create Library
 import createlib as cl
-from createlib.create_oi import CHARGING_STATE
+from createlib.create_oi import CHARGING_STATE, ROBOT
 
 try:
     import serial
@@ -66,6 +66,7 @@ VELOCITYCHANGE = 200
 ROTATIONCHANGE = 300
 DOCK_TIMEOUT = 30  # Timeout for docking in seconds
 LIGHTS_INTERVAL = 2
+SAFE_DRIVE_INTERVAL = 0.25
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -92,6 +93,7 @@ class TetheredDriveApp(tk.Tk):
         
         # custom variables
         self.lights = 1
+        self.safe_drive_mode = 1
 
         self._setup_ui()
         self.bind("<KeyPress>", self.handle_keypress)
@@ -132,6 +134,9 @@ class TetheredDriveApp(tk.Tk):
             "I": "Internal Info",
             "W": "Wall and Cliff Sensors",
             "L": "Light Show",
+            "Z": "Safe Driving -- Bumps and Wheel Drops",
+            "X": "Safe Driving -- Light Bumper",
+            "V": "Distance Driving",
             "Space": "Beep",
             "Arrows": "Motion",
             "Escape": "Quick Shutdown",
@@ -154,6 +159,9 @@ class TetheredDriveApp(tk.Tk):
             "I": lambda: self.display_internal_info(),
             "W": lambda: self.display_wall_cliffs(),
             "L": lambda: self.toggle_lights(),
+            "Z": lambda: self.toggle_safe_drive(mode=1),
+            "X": lambda: self.toggle_safe_drive(mode=2),
+            "V": lambda: self.toggle_drive_distance(),
             "UP": lambda: self._set_motion(velocity=VELOCITYCHANGE),
             "DOWN": lambda: self._set_motion(velocity=-VELOCITYCHANGE),
             "LEFT": lambda: self._set_motion(rotation=ROTATIONCHANGE),
@@ -207,6 +215,7 @@ class TetheredDriveApp(tk.Tk):
                 self.robot = cl.Create2(port=port, baud=115200)
                 # Initalize but do not start thread timers
                 self.lights_timer = cl.RepeatTimer(interval=LIGHTS_INTERVAL, function=self.lightshow, autostart=False)
+                self.safe_drive_timer = cl.RepeatTimer(interval=SAFE_DRIVE_INTERVAL, function=self.safe_drive, autostart=False)
                 messagebox.showinfo('Connected', "Connection succeeded!")
                 logging.info(f"Connected to robot on {port}")
         except Exception as e:
@@ -343,6 +352,122 @@ class TetheredDriveApp(tk.Tk):
         # Toggle/switch configurations
         self.lights ^= 1
 
+
+    # ----- Driving --------
+    def drive_forward(self, velocity=VELOCITYCHANGE):
+        """Drive forward with the specified or default velocity."""
+        self._set_motion(velocity=velocity)
+    
+    def drive_stop(self):
+        """Stop driving."""
+        self._set_motion(velocity=0)
+    
+    def get_distance(self, sensors):
+        """Calculates and returns the distance traveled by the robot.
+
+            Notes:
+            - Read the Create2 documentation on Packet IDs 19, 43, and 44
+            - mm = N counts * (mm in 1 wheel revolution / counts in 1 wheel revolution) 
+                 = N counts * (π * 72.0 / 508.8) = N counts * (ROBOT.TICK_TO_DISTANCE)
+        """
+        left_wheel_distance = sensors["encoder_counts_left"] * ROBOT.TICK_TO_DISTANCE
+        right_wheel_distance = sensors["encoder_counts_right"] * ROBOT.TICK_TO_DISTANCE
+        
+        # Return the sum of the wheel distances divided by two
+        return (left_wheel_distance + right_wheel_distance) / 2.0
+
+    def obstacle_detected(self, sensors, mode=0):
+        """Returns whether or not there is an obstacle detected using the given sensors and detection mode.
+        
+            Args:
+                sensors: All or relevant Create2 sensor values.
+                mode: Obstacle detection mode. Uses one or more group of sensors to determine obstacles in the way.
+                    - 0: Bumps and Wheeldrops AND Light Bumper
+                    - 1: Bumps and Wheeldrops
+                    - 2: Ligh Bumper
+            Example:
+                Say Bumps and Wheeldrops detects one wheel drop, and Light Bumper detects nothing. Mode results:
+                    - 0 --> Returns True
+                    - 1 --> Returns True
+                    - 2 --> Returns False
+        """
+        return {
+            0: any(sensors["bumps_wheeldrops"]) or any(sensors["light_bumper"]),
+            1: any(sensors["bumps_wheeldrops"]),
+            2: any(sensors["light_bumper"]),
+        }[mode]
+
+    def toggle_safe_drive(self, mode):
+        """Starts the periodic timer for the safe driving if stopped or mode change, or stops/pauses it if started."""  
+        # Check if change in safe driving mode
+        if self.safe_drive_mode != mode:
+            # Stop safe driving to change modes
+            self._stop_safe_drive()
+            self.safe_drive_mode = mode
+        
+        # Start safe driving timer if stopped or stop/pause if started
+        self._start_safe_drive() if self.safe_drive_timer._stopped else self._stop_safe_drive()
+    
+    def safe_drive(self):
+        """Drives forward unless/until bump or wheeldrop OR light bumper detected."""
+        sensors = self.get_sensors()
+
+        # Stop driving if obstacle detected using selected obstacle detection mode, or continue driving forward
+        if self.obstacle_detected(sensors, mode=self.safe_drive_mode): self.stop_safe_drive()    
+    
+    def _start_safe_drive(self):
+        # Starts driving and safe drive timer
+        self.safe_drive_timer.start()
+        self.drive_forward()
+    
+    def _stop_safe_drive(self):
+        # Stops driving and safe drive timer
+        self.safe_drive_timer.stop()
+        self.drive_stop()
+
+    def toggle_drive_distance(self):
+        """Gets user input for and calls drive_distance function if valid."""
+        # Get velocity and distance from user using Tkinter
+        result = simpledialog.askstring("Distance Drive Velocity", "Enter the driving velocity (mm/sec) and distance (mm) separated by a comma: ")
+        
+        try:
+            # Split into velocity and distance and try to cast as float
+            velocity, distance = str(result).split(",")
+            velocity, distance = float(velocity), float(distance)
+
+            # Start drive distance
+            self.drive_distance(velocity, distance)
+        except ValueError as e:
+            # Display error when input is invalid, either from incorrect value types or format
+            messagebox.showerror("Invalid Input", 'Enter velocity and distance as float values separated by a comma.'
+                '\n\nExample: Drvie 10 mm/sec for 40 mm, enter "10, 40" (without the quotation marks).')
+
+    def drive_distance(self, velocity, distance):
+        """Drives the specified velocity until the given distance is reached or an obstacle is detected.
+        
+            Args:
+                velocity (float): Driving velocity in mm/sec (steps of about 28.5 mm/s.)
+                distance (float): Driving distance in mm.
+        """
+        # Reset distance traveled
+        distance_traveled = self.get_distance() * 0
+
+        # Start driving using the given velocity
+        self.drive_forward(velocity=velocity)
+        
+        while distance_traveled <= distance:
+            sensors = self.get_sensors()
+            
+            # Get updated distance traveled and check for obstacles
+            distance_traveled += self.get_distance(sensors)
+
+            # Stop driving if an obstacle is encountered
+            if self.obstacle_detected(sensors):
+                break
+        
+        # Stop driving and display distance driven
+        self.drive_stop()
+        messagebox.showinfo("Distance Driven", f'\nTotal Distance Traveled: {distance_traveled}')      
 
     # ----------------------- Main Driver ------------------------------
 if __name__ == "__main__":
