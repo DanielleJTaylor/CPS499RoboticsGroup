@@ -281,11 +281,24 @@ class TetheredDriveApp(tk.Tk):
         """ Returns all sensor values as a namedtuple directly."""
         return self.robot.get_sensors()
 
-    def get_light_bumper(self):
-        """Returns the high resolution light bumper values as a list."""
+    def get_light_bumper(self, threshold=50):
+        """Returns the high resolution light bumper values as a list. Ignores values below the threshold."""
         sensors = self.get_sensors()
-        return [sensors.light_bumper_left, sensors.light_bumper_front_left, sensors.light_bumper_center_left,
-                sensors.light_bumper_center_right, sensors.light_bumper_front_right, sensors.light_bumper_right]
+        
+        # Retrieve all light bump sensors values
+        light_bumper_values = [
+            sensors.light_bumper_left, 
+            sensors.light_bumper_front_left, 
+            sensors.light_bumper_center_left,
+            sensors.light_bumper_center_right, 
+            sensors.light_bumper_front_right, 
+            sensors.light_bumper_right
+        ]
+        
+        # Apply threshold filtering: Any value below the threshold is treated as 0
+        filtered_values = [value if value > threshold else 0 for value in light_bumper_values]
+        
+        return filtered_values
 
     # ----- Tkinter Display Sensor Values --------
     def _decode_charger_state(self, code):
@@ -403,18 +416,20 @@ class TetheredDriveApp(tk.Tk):
         # Check light bumpers if mode 0 or 2
         if mode in (0, 2):
             light_bumper = self.get_light_bumper()
-            if light_bumper[0] > 0:
-                triggered_sensors.append("Light Bumper Triggered: Left")
-            if light_bumper[1] > 0:
-                triggered_sensors.append("Light Bumper Triggered: Front Left")
-            if light_bumper[2] > 0:
-                triggered_sensors.append("Light Bumper Triggered: Center Left")
-            if light_bumper[3] > 0:
-                triggered_sensors.append("Light Bumper Triggered: Center Right")
-            if light_bumper[4] > 0:
-                triggered_sensors.append("Light Bumper Triggered: Front Right")
-            if light_bumper[5] > 0:
-                triggered_sensors.append("Light Bumper Triggered: Right")
+            if any(light_bumper):  # Checks if any light bumper is triggered (non-zero)
+                detection = True
+                if light_bumper[0] > 0:
+                    triggered_sensors.append("Light Bumper Triggered: Left")
+                if light_bumper[1] > 0:
+                    triggered_sensors.append("Light Bumper Triggered: Front Left")
+                if light_bumper[2] > 0:
+                    triggered_sensors.append("Light Bumper Triggered: Center Left")
+                if light_bumper[3] > 0:
+                    triggered_sensors.append("Light Bumper Triggered: Center Right")
+                if light_bumper[4] > 0:
+                    triggered_sensors.append("Light Bumper Triggered: Front Right")
+                if light_bumper[5] > 0:
+                    triggered_sensors.append("Light Bumper Triggered: Right")
         
         # Print triggered sensors if any
         if triggered_sensors:
@@ -422,7 +437,7 @@ class TetheredDriveApp(tk.Tk):
             print(f"\n🔔 Obstacle Detected! Triggered Sensors:\n - " + "\n - ".join(triggered_sensors))
 
         if mode == 0:
-            return detection  
+            return detection
         elif mode == 1:
             return any([
                 bumps_wheeldrops.wheeldrop_left,
@@ -434,6 +449,7 @@ class TetheredDriveApp(tk.Tk):
             return any(light_bumper)
         
         return False
+
 
 
     def toggle_safe_drive(self, mode):
@@ -450,9 +466,10 @@ class TetheredDriveApp(tk.Tk):
     def safe_drive(self):
         """Drives forward unless/until bump or wheeldrop OR light bumper detected."""
         sensors = self.get_sensors()
-
+        
         # Stop driving if obstacle detected using selected obstacle detection mode, or continue driving forward
-        if self.obstacle_detected(sensors, mode=self.safe_drive_mode): self._stop_safe_drive()
+        if self.obstacle_detected(sensors, mode=self.safe_drive_mode): 
+            self._stop_safe_drive()  
 
     
     def _start_safe_drive(self):
