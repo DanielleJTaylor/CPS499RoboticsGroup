@@ -494,29 +494,18 @@ class TetheredDriveApp(tk.Tk):
 
 
     def get_distance(self, sensors):
-        """Calculates and returns the distance traveled by the robot since the last read.
+        """Calculates and returns the distance traveled by the robot.
 
-        Notes:
-        - Uses the 'distance' attribute from the sensors, which reports the distance traveled in millimeters.
-        - The value resets to zero each time it's read.
+            Notes:
+            - Read the Create2 documentation on Packet IDs 19, 43, and 44
+            - mm = N counts * (mm in 1 wheel revolution / counts in 1 wheel revolution) 
+                 = N counts * (π * 72.0 / 508.8) = N counts * (ROBOT.TICK_TO_DISTANCE)
         """
-        try:
-            # Directly access the 'distance' attribute
-            distance_traveled = getattr(sensors, 'distance', None)
-            
-            if distance_traveled is None:
-                logging.error("Failed to retrieve distance data from sensors.")
-                return 0.0
-
-            # Log the distance reading for debugging
-            logging.info(f"Distance received from sensors: {distance_traveled} mm")
-            
-            # Return the distance traveled
-            return distance_traveled
+        left_wheel_distance = sensors["encoder_counts_left"] * ROBOT.TICK_TO_DISTANCE
+        right_wheel_distance = sensors["encoder_counts_right"] * ROBOT.TICK_TO_DISTANCE
         
-        except AttributeError:
-            logging.error("Distance attribute not found in sensor data.")
-            return 0.0
+        # Return the sum of the wheel distances divided by two
+        return (left_wheel_distance + right_wheel_distance) / 2.0
 
 
 
