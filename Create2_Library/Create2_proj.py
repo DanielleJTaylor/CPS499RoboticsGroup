@@ -375,31 +375,6 @@ class TetheredDriveApp(tk.Tk):
         """Stop driving."""
         self._set_motion(velocity=0)
     
-    def get_distance(self, sensors):
-        """Calculates and returns the distance traveled by the robot since the last read.
-
-        Notes:
-        - Uses the 'distance' attribute from the sensors, which reports the distance traveled in millimeters.
-        - The value resets to zero each time it's read.
-        """
-        try:
-            # Directly access the 'distance' attribute
-            distance_traveled = getattr(sensors, 'distance', None)
-            
-            if distance_traveled is None:
-                logging.error("Failed to retrieve distance data from sensors.")
-                return 0.0
-
-            # Log the distance reading for debugging
-            logging.info(f"Distance received from sensors: {distance_traveled} mm")
-            
-            # Return the distance traveled
-            return distance_traveled
-        
-        except AttributeError:
-            logging.error("Distance attribute not found in sensor data.")
-            return 0.0
-
 
 
     def obstacle_detected(self, sensors, mode=0):
@@ -514,6 +489,36 @@ class TetheredDriveApp(tk.Tk):
             # Display error when input is invalid, either from incorrect value types or format
             messagebox.showerror("Invalid Input", 'Enter velocity and distance as float values separated by a comma.'
                 '\n\nExample: Drvie 10 mm/sec for 40 mm, enter "10, 40" (without the quotation marks).')
+
+
+
+
+    def get_distance(self, sensors):
+        """Calculates and returns the distance traveled by the robot since the last read.
+
+        Notes:
+        - Uses the 'distance' attribute from the sensors, which reports the distance traveled in millimeters.
+        - The value resets to zero each time it's read.
+        """
+        try:
+            # Directly access the 'distance' attribute
+            distance_traveled = getattr(sensors, 'distance', None)
+            
+            if distance_traveled is None:
+                logging.error("Failed to retrieve distance data from sensors.")
+                return 0.0
+
+            # Log the distance reading for debugging
+            logging.info(f"Distance received from sensors: {distance_traveled} mm")
+            
+            # Return the distance traveled
+            return distance_traveled
+        
+        except AttributeError:
+            logging.error("Distance attribute not found in sensor data.")
+            return 0.0
+
+
 
     def drive_distance(self, velocity, distance):
         """Drives the specified velocity until the given distance is reached or an obstacle is detected.
