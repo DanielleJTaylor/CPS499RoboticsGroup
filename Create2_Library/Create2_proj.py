@@ -546,6 +546,7 @@ class TetheredDriveApp(tk.Tk):
             # Stop driving if an obstacle is encountered
             if self.obstacle_detected(sensors):
                 logging.info("Obstacle detected. Stopping drive.")
+                self.drive_stop()
                 break
             
             # Give time for the robot to actually move between readings
