@@ -376,23 +376,28 @@ class TetheredDriveApp(tk.Tk):
         self._set_motion(velocity=0)
     
     def get_distance(self, sensors):
-        """Calculates and returns the distance traveled by the robot.
+        """Calculates and returns the distance traveled by the robot since the last read.
 
-            Notes:
-            - Uses the 'distance' attribute from the sensors, which reports the distance traveled in millimeters.
+        Notes:
+        - Uses the 'distance' attribute from the sensors, which reports the distance traveled in millimeters.
+        - The value resets to zero each time it's read.
         """
         try:
-            # Directly access the 'distance' attribute if available
-            distance_traveled = getattr(sensors, 'distance', 0)
+            # Directly access the 'distance' attribute
+            distance_traveled = getattr(sensors, 'distance', None)
             
-            # Log what was received for debugging purposes
+            if distance_traveled is None:
+                logging.error("Failed to retrieve distance data from sensors.")
+                return 0.0
+
+            # Log the distance reading for debugging
             logging.info(f"Distance received from sensors: {distance_traveled} mm")
             
             # Return the distance traveled
-            return distance_traveled if distance_traveled is not None else 0.0
+            return distance_traveled
         
         except AttributeError:
-            logging.error("Failed to retrieve distance data from sensors.")
+            logging.error("Distance attribute not found in sensor data.")
             return 0.0
 
 
@@ -519,7 +524,7 @@ class TetheredDriveApp(tk.Tk):
         """
         # Reset distance traveled
         distance_traveled = 0.0  # Initialize distance traveled to zero
-        
+
         # Start driving using the given velocity
         self.drive_forward(velocity=velocity)
         
@@ -528,14 +533,23 @@ class TetheredDriveApp(tk.Tk):
             
             # Update distance traveled
             increment = self.get_distance(sensors)
-            distance_traveled += increment
+            
+            # Log the distance increment received
+            logging.info(f"Increment received from sensors: {increment:.2f} mm")
 
-            logging.info(f"Traveled: {distance_traveled:.2f} mm, Increment: {increment:.2f} mm")
+            # Only add increment if it's a valid reading (i.e., not zero or a random negative value)
+            if abs(increment) > 0:
+                distance_traveled += abs(increment)
+            
+            logging.info(f"Total Distance Traveled: {distance_traveled:.2f} mm")
             
             # Stop driving if an obstacle is encountered
             if self.obstacle_detected(sensors):
                 logging.info("Obstacle detected. Stopping drive.")
                 break
+            
+            # Give time for the robot to actually move between readings
+            time.sleep(0.1)  # Adjust this delay as needed
         
         # Stop driving and display distance driven
         self.drive_stop()
