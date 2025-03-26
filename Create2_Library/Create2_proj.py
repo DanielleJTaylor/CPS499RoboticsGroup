@@ -379,15 +379,23 @@ class TetheredDriveApp(tk.Tk):
         """Calculates and returns the distance traveled by the robot.
 
             Notes:
-            - Read the Create2 documentation on Packet IDs 19, 43, and 44
-            - mm = N counts * (mm in 1 wheel revolution / counts in 1 wheel revolution) 
-                 = N counts * (π * 72.0 / 508.8) = N counts * (ROBOT.TICK_TO_DISTANCE)
+            - Uses the 'distance' attribute from the sensors, which reports the distance traveled in millimeters.
         """
-        left_wheel_distance = sensors["encoder_counts_left"] * ROBOT.TICK_TO_DISTANCE
-        right_wheel_distance = sensors["encoder_counts_right"] * ROBOT.TICK_TO_DISTANCE
+        try:
+            # Directly access the 'distance' attribute if available
+            distance_traveled = getattr(sensors, 'distance', 0)
+            
+            # Log what was received for debugging purposes
+            logging.info(f"Distance received from sensors: {distance_traveled} mm")
+            
+            # Return the distance traveled
+            return distance_traveled if distance_traveled is not None else 0.0
         
-        # Return the sum of the wheel distances divided by two
-        return (left_wheel_distance + right_wheel_distance) / 2.0
+        except AttributeError:
+            logging.error("Failed to retrieve distance data from sensors.")
+            return 0.0
+
+
 
     def obstacle_detected(self, sensors, mode=0):
         """Returns whether or not there is an obstacle detected using the given sensors and detection mode.
@@ -473,13 +481,16 @@ class TetheredDriveApp(tk.Tk):
 
     
     def _start_safe_drive(self):
-        # Starts driving and safe drive timer
-        self.safe_drive_timer.start()
+        """Starts driving and safe drive timer."""
+        if self.safe_drive_timer._stopped:
+            self.safe_drive_timer.start()
         self.drive_forward()
+
     
     def _stop_safe_drive(self):
-        # Stops driving and safe drive timer
-        self.safe_drive_timer.stop()
+        """Stops driving and safe drive timer."""
+        if not self.safe_drive_timer._stopped:
+            self.safe_drive_timer.stop()
         self.drive_stop()
 
     def toggle_drive_distance(self):
@@ -507,24 +518,30 @@ class TetheredDriveApp(tk.Tk):
                 distance (float): Driving distance in mm.
         """
         # Reset distance traveled
-        distance_traveled = self.get_distance() * 0
-
+        distance_traveled = 0.0  # Initialize distance traveled to zero
+        
         # Start driving using the given velocity
         self.drive_forward(velocity=velocity)
         
         while distance_traveled <= distance:
-            sensors = self.get_sensors()
+            sensors = self.get_sensors()  # Continuously get updated sensor data
             
-            # Get updated distance traveled and check for obstacles
-            distance_traveled += self.get_distance(sensors)
+            # Update distance traveled
+            increment = self.get_distance(sensors)
+            distance_traveled += increment
 
+            logging.info(f"Traveled: {distance_traveled:.2f} mm, Increment: {increment:.2f} mm")
+            
             # Stop driving if an obstacle is encountered
             if self.obstacle_detected(sensors):
+                logging.info("Obstacle detected. Stopping drive.")
                 break
         
         # Stop driving and display distance driven
         self.drive_stop()
-        messagebox.showinfo("Distance Driven", f'\nTotal Distance Traveled: {distance_traveled}')      
+        messagebox.showinfo("Distance Driven", f'\nTotal Distance Traveled: {distance_traveled:.2f} mm')  
+
+
 
     # ----------------------- Main Driver ------------------------------
 if __name__ == "__main__":
