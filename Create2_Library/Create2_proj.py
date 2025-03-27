@@ -447,34 +447,37 @@ class TetheredDriveApp(tk.Tk):
                 velocity (float): Driving velocity in mm/sec (steps of about 28.5 mm/s.)
                 distance (float): Driving distance in mm.
         """
-        # Reset distance traveled by querying for distance sensor
-        distance_traveled = 0.0 * self.get_sensors().distance
-        time.sleep(DISTANCE_DRIVE_POLLING)
+        # Initalize elapsed time to measure time driven
+        elapsed_time = 0.0
 
-        # Start driving using the given velocity
-        logging.info("Starting drive distance.")
+        # Get time to drive from distance and velocity
+        time_to_drive = float(distance) / float(velocity)
+
+        # Get drive starting time and start driving using the given velocity
+        start_time = time.time()
         self.drive_forward(velocity=velocity)
-        
-        # Drive while distance has not been reached
-        while distance_traveled <= distance:
+        logging.info(f"Starting drive distance for {time_to_drive} seconds.")
+
+        # Drive while time to drive has not been reached
+        while (time.time() - start_time) < time_to_drive:
             # Get updated sensor data
             sensors = self.get_sensors()
 
-            # Get distance traveled since last queried
-            distance_traveled += abs(sensors.distance)
-
             # Stop driving if obstacle encountered
             if self.obstacle_detected(sensors):
-                self.drive_stop()
-                logging.info(f'Obstacle detected--stopping drive. Sensor values:\n{sensors.bumps_wheeldrops}\n{self.get_light_bumper(sensors)}')
+                logging.info(f'Obstacle detected--stopping drive.')
                 break
 
             # Give time for robot to move between readings
             time.sleep(DISTANCE_DRIVE_POLLING)
-    
-        # Stop driving and display distance driven
+        
+        # Stop driving and get time driven
         self.drive_stop()
-        messagebox.showinfo("Distance Driven", f'\nTotal Distance Traveled: {distance_traveled:.2f} mm')  
+        elapsed_time = time.time() - start_time
+
+        # Calculate distance driven from the time driven and display
+        distance_driven = velocity * elapsed_time
+        messagebox.showinfo("Distance Driven", f'\nTotal Distance Traveled: {distance_driven:.2f} mm')  
 
 
     # ----------------------- Main Driver ------------------------------
