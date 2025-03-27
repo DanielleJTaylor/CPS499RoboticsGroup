@@ -41,6 +41,7 @@
 ###########################################################################
 
 import logging
+import math
 import struct
 import sys
 import glob
@@ -51,7 +52,7 @@ from functools import wraps
 
 # Create Library
 import createlib as cl
-from createlib.create_oi import CHARGING_STATE, ROBOT
+from createlib.create_oi import CHARGING_STATE
 
 try:
     import serial
@@ -65,8 +66,12 @@ TEXTHEIGHT = 24
 VELOCITYCHANGE = 200
 ROTATIONCHANGE = 300
 DOCK_TIMEOUT = 30  # Timeout for docking in seconds
-LIGHTS_INTERVAL = 2
-SAFE_DRIVE_INTERVAL = 0.25
+
+# Custom constants
+DISTANCE_DRIVE_POLLING = 0.1   # Distance driving polling wait in seconds
+LIGHTS_INTERVAL = 2            # LED toggle timer interval in seconds
+SAFE_DRIVE_INTERVAL = 0.1      # Safe driving timer interval in seconds
+LIGHT_BUMPER_THRESHOLD = 50    # Minimum threshold for light bumper detection
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -91,9 +96,9 @@ class TetheredDriveApp(tk.Tk):
         self.velocity = 0
         self.rotation = 0
         
-        # custom variables
-        self.lights = 1
-        self.safe_drive_mode = 1
+        # Custom variables
+        self.lights = 1             # Current LED/lightshow configuration (0 or 1)
+        self.safe_drive_mode = 1    # Current safe drive mode (0, 1, or 2)
 
         self._setup_ui()
         self.bind("<KeyPress>", self.handle_keypress)
@@ -279,15 +284,18 @@ class TetheredDriveApp(tk.Tk):
     
 
     # ----- Sensor Getters --------
-    def get_sensors(self, sensor=None):
-        """ Returns specified sensor value or all sensor values as a dictionary."""
-        return self.robot.get_sensors()._asdict() if not sensor else self.robot.get_sensors()._asdict()[sensor]
+    def get_sensors(self):
+        """ Returns all sensor values as a namedtuple."""
+        return self.robot.get_sensors()
 
-    def get_light_bumper(self):
+    def get_light_bumper(self, sensors):
         """Returns the high resolution light bumper values as a list."""
-        sensors = self.get_sensors()
-        return [sensors["light_bumper_left"], sensors["light_bumper_front_left"], sensors["light_bumper_center_left"], 
-                sensors["light_bumper_center_right"], sensors["light_bumper_front_right"],sensors["light_bumper_right"]]
+        return [sensors.light_bumper_left, 
+                sensors.light_bumper_front_left, 
+                sensors.light_bumper_center_left,
+                sensors.light_bumper_center_right, 
+                sensors.light_bumper_front_right, 
+                sensors.light_bumper_right]
 
     # ----- Tkinter Display Sensor Values --------
     def _decode_charger_state(self, code):
@@ -296,38 +304,50 @@ class TetheredDriveApp(tk.Tk):
     
     def display_bumps_wheeldrops(self):
         """Displays the Bumps and Wheeldrops sensor values in a Tkinter window."""
-        sensors = self.get_sensors("bumps_wheeldrops")
+        sensors = self.get_sensors().bumps_wheeldrops  # Get Bumps and Wheeldrops namedtuple
+
+        # Build formatted string of Bumps and Wheeldrops values
         info_string = (
             f'\nLeft Wheel: {"Dropped" if sensors.wheeldrop_left else "Raised"}'
             f'\nRight Wheel: {"Dropped" if sensors.wheeldrop_right else "Raised"}'
             f'\nLeft Bump: {"Bump" if sensors.bump_left else "No Bump"}'
             f'\nRight Bump: {"Bump" if sensors.bump_right else "No Bump"}'
         )
+
+        # Display formatted string in Tkinter window
         messagebox.showinfo("Bumps and Wheeldrops", info_string)
     
     def display_internal_info(self):
         """Displays internal information related sensor values in a Tkinter window."""
-        sensors = self.get_sensors()
+        sensors = self.get_sensors()  # Get all sensor values
+
+        # Build formatted string of Packet ID #3 values with proper units
         info_string = (
-            f'\nCharger State: {self._decode_charger_state(sensors["charger_state"])}'
-            f'\nVoltage: {sensors["voltage"]} mV'
-            f'\nCurrent: {sensors["current"]} mA'
-            f'\nTemperature: {sensors["temperature"]} degrees Celsius'
-            f'\nBattery Charge: {sensors["battery_charge"]} mAh'
-            f'\nBattery Capacity: {sensors["battery_capacity"]} mAh'
+            f'\nCharger State: {self._decode_charger_state(sensors.charger_state)}'
+            f'\nVoltage: {sensors.voltage} mV'
+            f'\nCurrent: {sensors.current} mA'
+            f'\nTemperature: {sensors.temperature} degrees Celsius'
+            f'\nBattery Charge: {sensors.battery_charge} mAh'
+            f'\nBattery Capacity: {sensors.battery_capacity} mAh'
         )
+
+        # Display formatted string in Tkinter window
         messagebox.showinfo("Interal Information", info_string)
     
     def display_wall_cliffs(self):
         """Displays Wall and Cliffs sensor values in a Tkinter window."""
-        sensors = self.get_sensors()
+        sensors = self.get_sensors()  # Get Bumps and Wheeldrops namedtuple
+        
+        # Build formatted string of Wall and Cliff signal sensor values
         info_string = (
-            f'\nWall Signal: {sensors["light_bumper_right"]}'
-            f'\nCliff Left Signal: {sensors["cliff_left_signal"]}'
-            f'\nCliff Front Left Signal: {sensors["cliff_front_left_signal"]}'
-            f'\nCliff Front Right Signal: {sensors["cliff_front_right_signal"]}'
-            f'\nCliff Right Signal: {sensors["cliff_right_signal"]}'
+            f'\nWall Signal: {sensors.light_bumper_right}'
+            f'\nCliff Left Signal: {sensors.cliff_left_signal}'
+            f'\nCliff Front Left Signal: {sensors.cliff_front_left_signal}'
+            f'\nCliff Front Right Signal: {sensors.cliff_front_right_signal}'
+            f'\nCliff Right Signal: {sensors.cliff_right_signal}'
         )
+
+        # Display formatted string in Tkinter window
         messagebox.showinfo("Wall and Cliffs", info_string)
 
     # ----- Lights --------
@@ -352,7 +372,6 @@ class TetheredDriveApp(tk.Tk):
         # Toggle/switch configurations
         self.lights ^= 1
 
-
     # ----- Driving --------
     def drive_forward(self, velocity=VELOCITYCHANGE):
         """Drive forward with the specified or default velocity."""
@@ -361,20 +380,6 @@ class TetheredDriveApp(tk.Tk):
     def drive_stop(self):
         """Stop driving."""
         self._set_motion(velocity=0)
-    
-    def get_distance(self, sensors):
-        """Calculates and returns the distance traveled by the robot.
-
-            Notes:
-            - Read the Create2 documentation on Packet IDs 19, 43, and 44
-            - mm = N counts * (mm in 1 wheel revolution / counts in 1 wheel revolution) 
-                 = N counts * (π * 72.0 / 508.8) = N counts * (ROBOT.TICK_TO_DISTANCE)
-        """
-        left_wheel_distance = sensors["encoder_counts_left"] * ROBOT.TICK_TO_DISTANCE
-        right_wheel_distance = sensors["encoder_counts_right"] * ROBOT.TICK_TO_DISTANCE
-        
-        # Return the sum of the wheel distances divided by two
-        return (left_wheel_distance + right_wheel_distance) / 2.0
 
     def obstacle_detected(self, sensors, mode=0):
         """Returns whether or not there is an obstacle detected using the given sensors and detection mode.
@@ -382,51 +387,44 @@ class TetheredDriveApp(tk.Tk):
             Args:
                 sensors: All or relevant Create2 sensor values.
                 mode: Obstacle detection mode. Uses one or more group of sensors to determine obstacles in the way.
-                    - 0: Bumps and Wheeldrops AND Light Bumper
+                    - 0: Bumps and Wheeldrops AND Light Bumper (over threshold value)
                     - 1: Bumps and Wheeldrops
-                    - 2: Ligh Bumper
-            Example:
-                Say Bumps and Wheeldrops detects one wheel drop, and Light Bumper detects nothing. Mode results:
-                    - 0 --> Returns True
-                    - 1 --> Returns True
-                    - 2 --> Returns False
+                    - 2: Light Bumper (over threshold value)
         """
         return {
-            0: any(sensors["bumps_wheeldrops"]) or any(sensors["light_bumper"]),
-            1: any(sensors["bumps_wheeldrops"]),
-            2: any(sensors["light_bumper"]),
+            0: any(sensors.bumps_wheeldrops) or any(value >= LIGHT_BUMPER_THRESHOLD for value in self.get_light_bumper(sensors)),
+            1: any(sensors.bumps_wheeldrops),
+            2: any(value >= LIGHT_BUMPER_THRESHOLD for value in self.get_light_bumper(sensors))
         }[mode]
 
-    def toggle_safe_drive(self, mode):
-        """Starts the periodic timer for the safe driving if stopped or mode change, or stops/pauses it if started."""  
-        # Check if change in safe driving mode
-        if self.safe_drive_mode != mode:
-            # Stop safe driving to change modes
-            self._stop_safe_drive()
+    def toggle_safe_drive(self, mode, velocity=VELOCITYCHANGE):
+        """Starts the periodic timer for the safe driving if stopped, or stops/pauses it if started."""  
+        if self.safe_drive_timer._stopped:
+            # Update the safe driving mode and then start
             self.safe_drive_mode = mode
-        
-        # Start safe driving timer if stopped or stop/pause if started
-        self._start_safe_drive() if self.safe_drive_timer._stopped else self._stop_safe_drive()
+            self._start_safe_drive(velocity=velocity)
+        else:
+            # Stop/pause the safe driving mode
+            self._stop_safe_drive()
     
     def safe_drive(self):
         """Drives forward unless/until bump or wheeldrop OR light bumper detected."""
-        sensors = self.get_sensors()
-
         # Stop driving if obstacle detected using selected obstacle detection mode, or continue driving forward
-        if self.obstacle_detected(sensors, mode=self.safe_drive_mode): self.stop_safe_drive()    
+        if self.obstacle_detected(self.get_sensors(), mode=self.safe_drive_mode): 
+            self._stop_safe_drive()
     
     def _start_safe_drive(self):
-        # Starts driving and safe drive timer
+        """Starts safe driving and safe drive timer"""
         self.safe_drive_timer.start()
         self.drive_forward()
     
     def _stop_safe_drive(self):
-        # Stops driving and safe drive timer
+        """Stops safe driving and safe drive timer"""
         self.safe_drive_timer.stop()
         self.drive_stop()
 
     def toggle_drive_distance(self):
-        """Gets user input for and calls drive_distance function if valid."""
+        """Gets user input for and calls driveDistance function if valid."""
         # Get velocity and distance from user using Tkinter
         result = simpledialog.askstring("Distance Drive Velocity", "Enter the driving velocity (mm/sec) and distance (mm) separated by a comma: ")
         
@@ -436,38 +434,48 @@ class TetheredDriveApp(tk.Tk):
             velocity, distance = float(velocity), float(distance)
 
             # Start drive distance
-            self.drive_distance(velocity, distance)
+            self.driveDistance(velocity, distance)
         except ValueError as e:
             # Display error when input is invalid, either from incorrect value types or format
             messagebox.showerror("Invalid Input", 'Enter velocity and distance as float values separated by a comma.'
                 '\n\nExample: Drvie 10 mm/sec for 40 mm, enter "10, 40" (without the quotation marks).')
 
-    def drive_distance(self, velocity, distance):
+    def driveDistance(self, velocity, distance):
         """Drives the specified velocity until the given distance is reached or an obstacle is detected.
         
             Args:
                 velocity (float): Driving velocity in mm/sec (steps of about 28.5 mm/s.)
                 distance (float): Driving distance in mm.
         """
-        # Reset distance traveled
-        distance_traveled = self.get_distance() * 0
+        # Reset distance traveled by querying for distance sensor
+        distance_traveled = 0.0 * self.get_sensors().distance
+        time.sleep(DISTANCE_DRIVE_POLLING)
 
         # Start driving using the given velocity
+        logging.info("Starting drive distance.")
         self.drive_forward(velocity=velocity)
         
+        # Drive while distance has not been reached
         while distance_traveled <= distance:
+            # Get updated sensor data
             sensors = self.get_sensors()
-            
-            # Get updated distance traveled and check for obstacles
-            distance_traveled += self.get_distance(sensors)
 
-            # Stop driving if an obstacle is encountered
+            # Get distance traveled since last queried
+            distance_traveled += abs(sensors.distance)
+
+            # Stop driving if obstacle encountered
             if self.obstacle_detected(sensors):
+                self.drive_stop()
+                logging.info(f'Obstacle detected--stopping drive. Sensor values:\n{sensors.bumps_wheeldrops}\n{self.get_light_bumper(sensors)}')
                 break
-        
+
+            # Give time for robot to move between readings
+            time.sleep(DISTANCE_DRIVE_POLLING)
+    
         # Stop driving and display distance driven
         self.drive_stop()
-        messagebox.showinfo("Distance Driven", f'\nTotal Distance Traveled: {distance_traveled}')      
+        messagebox.showinfo("Distance Driven", f'\nTotal Distance Traveled: {distance_traveled:.2f} mm')  
+
 
     # ----------------------- Main Driver ------------------------------
 if __name__ == "__main__":
