@@ -456,7 +456,7 @@ class TetheredDriveApp(tk.Tk):
         self.drive_forward(velocity=velocity)
         
         # Drive while distance has not been reached
-        while distance_traveled <= distance:
+        while distance_traveled < distance:
             # Get updated sensor data
             sensors = self.get_sensors()
 
