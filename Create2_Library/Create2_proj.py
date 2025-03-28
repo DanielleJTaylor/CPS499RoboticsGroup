@@ -426,20 +426,19 @@ class TetheredDriveApp(tk.Tk):
 
     def toggle_drive_distance(self):
         """Gets user input for and calls driveDistance function if valid."""
-        # Get velocity and distance from user using Tkinter
-        result = simpledialog.askstring("Distance Drive Velocity", "Enter the driving velocity (mm/sec) and distance (mm) separated by a comma: ")
+        # Get distance from user using Tkinter
+        result = simpledialog.askstring("Distance Drive Velocity", f"Enter distance (mm) to drive at {SAFE_DRIVE_VELOCITY} (mm/s): ")
         
         try:
-            # Split into velocity and distance and try to cast as float
-            velocity, distance = str(result).split(",")
-            velocity, distance = float(velocity), float(distance)
+            # Try to cast as float
+            distance = float(result)
 
             # Start drive distance
-            self.driveDistance(velocity, distance)
+            self.driveDistance(SAFE_DRIVE_VELOCITY, distance)
         except ValueError as e:
             # Display error when input is invalid, either from incorrect value types or format
-            messagebox.showerror("Invalid Input", 'Enter velocity and distance as float values separated by a comma.'
-                '\n\nExample: Drvie 10 mm/sec for 40 mm, enter "10, 40" (without the quotation marks).')
+            messagebox.showerror("Invalid Input", 'Enter distance (mm) to drive as a float value.'
+                '\n\nExample: To drive 500 mm, enter "500" (without the quotation marks).')
 
     def driveDistance(self, velocity, distance):
         """Drives the specified velocity until the given distance is reached or an obstacle is detected.
@@ -467,7 +466,7 @@ class TetheredDriveApp(tk.Tk):
             # Stop driving if obstacle encountered
             if self.obstacle_detected(sensors):
                 self.drive_stop()
-                logging.info(f'Obstacle detected--stopping drive. Sensor values:\n{sensors.bumps_wheeldrops}\n{self.get_light_bumper(sensors)}')
+                logging.info(f'Obstacle detected--stopping drive.')
                 break
 
             # Give time for robot to move between readings
