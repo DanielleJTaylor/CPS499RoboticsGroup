@@ -71,7 +71,8 @@ DOCK_TIMEOUT = 30  # Timeout for docking in seconds
 DISTANCE_DRIVE_POLLING = 0.1   # Distance driving polling wait in seconds
 LIGHTS_INTERVAL = 2            # LED toggle timer interval in seconds
 SAFE_DRIVE_INTERVAL = 0.1      # Safe driving timer interval in seconds
-LIGHT_BUMPER_THRESHOLD = 50    # Minimum threshold for light bumper detection
+LIGHT_BUMPER_THRESHOLD = 150   # Minimum threshold for light bumper detection
+SAFE_DRIVE_VELOCITY = 57       # Drive in steps of 28.5
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -373,7 +374,7 @@ class TetheredDriveApp(tk.Tk):
         self.lights ^= 1
 
     # ----- Driving --------
-    def drive_forward(self, velocity=VELOCITYCHANGE):
+    def drive_forward(self, velocity=SAFE_DRIVE_VELOCITY):
         """Drive forward with the specified or default velocity."""
         self._set_motion(velocity=velocity)
     
@@ -397,12 +398,12 @@ class TetheredDriveApp(tk.Tk):
             2: any(value >= LIGHT_BUMPER_THRESHOLD for value in self.get_light_bumper(sensors))
         }[mode]
 
-    def toggle_safe_drive(self, mode, velocity=VELOCITYCHANGE):
+    def toggle_safe_drive(self, mode):
         """Starts the periodic timer for the safe driving if stopped, or stops/pauses it if started."""  
         if self.safe_drive_timer._stopped:
             # Update the safe driving mode and then start
             self.safe_drive_mode = mode
-            self._start_safe_drive(velocity=velocity)
+            self._start_safe_drive()
         else:
             # Stop/pause the safe driving mode
             self._stop_safe_drive()
