@@ -508,51 +508,73 @@ class TetheredDriveApp(tk.Tk):
         return (left_wheel_distance + right_wheel_distance) / 2.0
 
 
+    def driveDistance(self, velocity, distance):
+            """Drives the specified velocity until the given distance is reached or an obstacle is detected.
+            
+                Args:
+                    velocity (float): Driving velocity in mm/sec (steps of about 28.5 mm/s.)
+                    distance (float): Driving distance in mm.
+            """
+            # Reset distance traveled by querying for distance sensor
+            distance_traveled = 0.0 * self.get_sensors().distance
+            time.sleep(DISTANCE_DRIVE_POLLING)
 
-    def drive_distance(self, velocity, distance):
-        """Drives the specified velocity until the given distance is reached or an obstacle is detected.
+            # Start driving using the given velocity
+            logging.info("Starting drive distance.")
+            self.drive_forward(velocity=velocity)
+            
+            # Drive while distance has not been reached
+            while distance_traveled < distance:
+                # Get updated sensor data
+                sensors = self.get_sensors()
+
+                # Get distance traveled since last queried
+                distance_traveled += abs(sensors.distance)
+
+                # Stop driving if obstacle encountered
+                if self.obstacle_detected(sensors):
+                    self.drive_stop()
+                    logging.info(f'Obstacle detected--stopping drive.')
+                    break
+
+                # Give time for robot to move between readings
+                time.sleep(DISTANCE_DRIVE_POLLING)
         
-            Args:
-                velocity (float): Driving velocity in mm/sec (steps of about 28.5 mm/s.)
-                distance (float): Driving distance in mm.
-        """
-        # Reset distance traveled
-        distance_traveled = 0.0  # Initialize distance traveled to zero
-
-        # Start driving using the given velocity
-        self.drive_forward(velocity=velocity)
-        
-        while distance_traveled <= distance:
-            sensors = self.get_sensors()  # Continuously get updated sensor data
-            
-            # Update distance traveled
-            increment = self.get_distance(sensors)
-            
-            # Log the distance increment received
-            logging.info(f"Increment received from sensors: {increment:.2f} mm")
-
-            # Only add increment if it's a valid reading (i.e., not zero or a random negative value)
-            if abs(increment) > 0:
-                distance_traveled += abs(increment)
-            
-            logging.info(f"Total Distance Traveled: {distance_traveled:.2f} mm")
-            
-            # Stop driving if an obstacle is encountered
-            if self.obstacle_detected(sensors):
-                logging.info("Obstacle detected. Stopping drive.")
-                self.drive_stop()
-                break
-            
-            # Give time for the robot to actually move between readings
-            time.sleep(0.1)  # Adjust this delay as needed
-        
-        # Stop driving and display distance driven
-        self.drive_stop()
-        messagebox.showinfo("Distance Driven", f'\nTotal Distance Traveled: {distance_traveled:.2f} mm')  
+            # Stop driving and display distance driven
+            self.drive_stop()
+            messagebox.showinfo("Distance Driven", f'\nTotal Distance Traveled: {distance_traveled:.2f} mm')  
 
 
 
-    # ----------------------- Main Driver ------------------------------
-if __name__ == "__main__":
-    app = TetheredDriveApp()
-    app.mainloop()
+    """ Cicular Array """
+
+    class Solution(object):
+        def circularArrayLoop(self, nums):
+            """
+            :type nums: List[int]
+            :rtype: bool
+            """
+            for i, num in enumerate(nums):
+                # use a distinct marker for each starting point
+                mark = str(i)
+                
+                # explore while node is new, direction is same, and is not self loop
+                # note: if node has been marked by a different marker, no need to proceed. This gives O(n) time.
+                while (isinstance(nums[i] , int)) and (num * nums[i] > 0) and (nums[i] % len(nums) != 0):
+                    jump = nums[i] 
+                    nums[i] = mark
+                    i = (i + jump) % len(nums)
+                
+                # if self loop, nums[i] is never marked
+                # if nums[i] is marked, a cycle is found
+                if nums[i] == mark:
+                    return True
+                
+            return False
+
+
+
+        # ----------------------- Main Driver ------------------------------
+    if __name__ == "__main__":
+        app = TetheredDriveApp()
+        app.mainloop()
