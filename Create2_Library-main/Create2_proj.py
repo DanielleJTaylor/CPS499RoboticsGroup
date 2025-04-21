@@ -600,57 +600,46 @@ class TetheredDriveApp(tk.Tk):
     @require_robot
     def wall_follow_behavior(self):
         """
-        Initiates wall-following behavior using circular array for recent bumper readings.
+        Follows a wall using center light bump sensors without any threshold.
+        Starts by driving until a wall is detected, then turns until no bump is present.
+        Chooses direction based on which center sensor is stronger.
         """
-
-
-    @require_robot
-    def wall_follow_behavior(self):
-        """
-        Initiates wall-following behavior using circular array for recent bumper readings.
-        If bump is detected, robot rotates 45 degrees repeatedly until no bump is detected.
-        """
-        self.drive_until_wall()
-        logging.info("Wall-follow PID control starting...")
+        self.drive_along_wall_until_detected()
+        logging.info("Wall-follow (no-threshold) behavior starting...")
 
         try:
             while True:
                 sensors = self.get_sensors()
                 bump_values = self.get_light_bumper(sensors)
 
-                # Update circular buffer with new reading
                 self.bump_buffer[self.buffer_index] = bump_values
                 self.buffer_index = (self.buffer_index + 1) % 6
 
-                # Compute average signal strength across the buffer
                 avg_signal = [sum(x[i] for x in self.bump_buffer) / 6 for i in range(6)]
+                center_left = avg_signal[2]
+                center_right = avg_signal[3]
 
-                # Lower threshold for wall-following sensitivity
-                threshold = 10
-
-                # Handle bump detection (rotate 45 degrees repeatedly until clear)
+                # Rotate counterclockwise if bump detected
                 while sensors.bumps_wheeldrops.bump_left or sensors.bumps_wheeldrops.bump_right:
-                    logging.info("Bump detected. Rotating 45 degrees...")
-
+                    logging.info("Bump detected. Rotating 45 degrees counterclockwise...")
                     self.drive_stop()
                     time.sleep(0.2)
 
-                    # Rotate 45 degrees: 100 ms * 6 ~= 45 deg for Create 2
-                    self.robot.drive_direct(100, -100)  # Rotate clockwise
+                    self.robot.drive_direct(-100, 100)  # Turn counterclockwise
                     time.sleep(0.6)
                     self.drive_stop()
                     time.sleep(0.2)
 
-                    # Recheck sensors
                     sensors = self.get_sensors()
 
-                # Continue wall-following
-                if avg_signal[2] > threshold:  # Strong signal on center left
-                    self.robot.drive_direct(30, 60)
-                elif avg_signal[3] > threshold:  # Strong signal on center right
-                    self.robot.drive_direct(60, 30)
+                time.sleep(0.1)
+
+                if center_left > center_right:
+                    self.robot.drive_direct(30, 60)  # Curve right
+                elif center_right > center_left:
+                    self.robot.drive_direct(60, 30)  # Curve left
                 else:
-                    self.robot.drive_direct(50, 50)
+                    self.robot.drive_direct(50, 50)  # Straight
 
                 time.sleep(0.1)
 
@@ -659,40 +648,98 @@ class TetheredDriveApp(tk.Tk):
             logging.info("Wall-following behavior interrupted.")
 
 
-
     @require_robot
-    def drive_until_wall(self, velocity=150):
+    def drive_along_wall_until_detected(self, velocity=100):
         """
-        Drives forward until a wall is detected via light bumpers.
-        Uses circular buffer logic to smooth detection.
+        Drives forward, constantly aligning toward a nearby wall.
+        Stops when too close or bump is triggered.
+        Doesn't back up — only aligns or curves gently.
         """
-        logging.info("Driving forward until wall is detected (non-collision)...")
-        self.drive_forward(velocity)
+        logging.info("Driving along wall, searching...")
 
-        bump_buffer = [0] * 6
-        buffer_index = 0
+        self.bump_buffer = [[0] * 6 for _ in range(6)]  # Reset buffer
+        self.buffer_index = 0
+        self.drive_forward(velocity)
 
         try:
             while True:
                 sensors = self.get_sensors()
                 bump_values = self.get_light_bumper(sensors)
 
-                # Store center left and right values into circular buffer
-                center_value = max(bump_values[2], bump_values[3])
-                bump_buffer[buffer_index] = center_value
-                buffer_index = (buffer_index + 1) % 6
+                # Store into circular buffer
+                self.bump_buffer[self.buffer_index] = bump_values
+                self.buffer_index = (self.buffer_index + 1) % 6
+                avg_signal = [sum(x[i] for x in self.bump_buffer) / 6 for i in range(6)]
 
-                # Average over buffer to determine if wall is near
-                avg_signal = sum(bump_buffer) / len(bump_buffer)
-                if avg_signal >= LIGHT_BUMPER_THRESHOLD:
-                    logging.info("Wall detected via smoothed light bumpers.")
+                center_left = avg_signal[2]
+                center_right = avg_signal[3]
+                total_signal = sum(avg_signal)
+
+                # BUMPED into wall? Stop and rotate away (small counterclockwise turn)
+                if sensors.bumps_wheeldrops.bump_left or sensors.bumps_wheeldrops.bump_right:
+                    logging.info("Bump detected! Rotating away.")
+                    self.drive_stop()
+                    time.sleep(0.2)
+                    self.robot.drive_direct(-100, 100)  # rotate away
+                    time.sleep(0.4)
+                    self.drive_stop()
+                    time.sleep(0.2)
+                    continue  # resume loop after adjusting
+
+                # Too close? Stop. Wall is "detected"
+                if total_signal > 400:
+                    logging.info("Close to wall. Stopping and aligning...")
+                    self.drive_stop()
+                    self.align_to_wall()
                     break
+
+                # Slight correction while moving forward
+                if center_left > center_right + 10:
+                    self.robot.drive_direct(velocity - 20, velocity + 20)  # curve right
+                elif center_right > center_left + 10:
+                    self.robot.drive_direct(velocity + 20, velocity - 20)  # curve left
+                else:
+                    self.drive_forward(velocity)
+
 
                 time.sleep(DISTANCE_DRIVE_POLLING)
 
         finally:
             self.drive_stop()
-            logging.info("Stopped before wall.")
+            logging.info("Wall detection phase complete.")
+
+    @require_robot
+    def align_to_wall(self, threshold_diff=10, max_attempts=15):
+        """
+        Aligns the robot parallel to the wall using center light bump sensors.
+        No reverse — just gentle in-place turns.
+        """
+        logging.info("Aligning to wall...")
+
+        attempts = 0
+        while attempts < max_attempts:
+            sensors = self.get_sensors()
+            bump_values = self.get_light_bumper(sensors)
+
+            center_left = bump_values[2]
+            center_right = bump_values[3]
+            diff = abs(center_left - center_right)
+
+            if diff <= threshold_diff:
+                logging.info("Wall aligned.")
+                break
+
+            if center_left > center_right:
+                self.robot.drive_direct(-30, 30)  # slight right turn
+            else:
+                self.robot.drive_direct(30, -30)  # slight left turn
+
+            time.sleep(0.2)
+            self.drive_stop()
+            time.sleep(0.1)
+            attempts += 1
+
+        self.drive_stop()
 
 
     @require_robot
