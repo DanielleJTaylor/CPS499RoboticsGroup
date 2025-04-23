@@ -675,7 +675,7 @@ class TetheredDriveApp(tk.Tk):
                 center_right = avg_signal[3]
                 total_signal = sum(avg_signal)
 
-                # BUMPED into wall? Stop and rotate away (small counterclockwise turn)
+                # What it does now: BUMPED into wall? Stop and rotate away (small counterclockwise turn)
                 if sensors.bumps_wheeldrops.bump_left or sensors.bumps_wheeldrops.bump_right:
                     logging.info("Bump detected! Rotating away.")
                     self.drive_stop()
@@ -693,7 +693,8 @@ class TetheredDriveApp(tk.Tk):
                     self.align_to_wall()
                     break
 
-                # Slight correction while moving forward
+                # Going to change this to check light bumps for left vs right
+                # Need to alter
                 if center_left > center_right + 10:
                     self.robot.drive_direct(velocity - 20, velocity + 20)  # curve right
                 elif center_right > center_left + 10:
