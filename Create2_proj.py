@@ -41,6 +41,7 @@
 ###########################################################################
 
 import logging
+import math
 import struct
 import sys
 import glob
@@ -51,6 +52,7 @@ from functools import wraps
 
 # Create Library
 import createlib as cl
+from createlib.circular_array import CircularArray
 
 try:
     import serial
@@ -64,6 +66,15 @@ TEXTHEIGHT = 24
 VELOCITYCHANGE = 200
 ROTATIONCHANGE = 300
 DOCK_TIMEOUT = 30  # Timeout for docking in seconds
+
+# Custom constants
+BIG_TURN_THRESHOLD = 500    # Minimum error/control value needed to make a big turn
+SMALL_TURN_THRESHOLD = 200  # Minimum error/control value needed to make a small turn
+
+SET_POINT = 500             # Wall following set point for PID
+WALL_THRESHOLD = 600        # Front/center wall light bumper detection threshold
+VELOCITY_STEPS = 28.5       # Velocity controls in steps of 28.5 mm/s
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -110,7 +121,10 @@ class TetheredDriveApp(tk.Tk):
         self.robot = None
         self.velocity = 0
         self.rotation = 0
+
         # TODO: custom variables
+        self.wall_follow_timer = None
+        self.wall_follow_active = False
         
         # Automatic polling
         self.sensor_poll_timer = None
@@ -169,6 +183,7 @@ class TetheredDriveApp(tk.Tk):
             "D": "Dock",
             "R": "Reset",
             "B": "Sensor Dump",
+            "V": "Drive to Wall",
             "Space": "Beep",
             "O": "Toggle Sensor Polling",
             "Arrows": "Motion",
@@ -188,6 +203,7 @@ class TetheredDriveApp(tk.Tk):
             "R": lambda: self.robot.reset(),
             "SPACE": lambda: self._beep_song(),
             "B": lambda: logging.info(self._format_sensor_data(self.robot.get_sensors())),
+            "V": lambda: self.wall_following(),
             "O": self.toggle_sensor_polling,
             "UP": lambda: self._set_motion(velocity=VELOCITYCHANGE),
             "DOWN": lambda: self._set_motion(velocity=-VELOCITYCHANGE),
@@ -353,6 +369,241 @@ class TetheredDriveApp(tk.Tk):
             self.sensor_text.delete("1.0", tk.END)
             self.sensor_text.insert(tk.END, sensor_text)
             self.sensor_text.config(state=tk.DISABLED)
+    
+    @require_robot
+    def toggle_wall_follow(self):
+        """Toggles wall following on/off."""
+
+        if self.wall_follow_timer:
+            self.wall_follow_timer.stop()
+            self.wall_follow_timer = None
+            self.wall_follow_active = False
+            logging.info("Wall following stopped.")
+        else:
+            from createlib.custom_timer import CustomTimer
+            self.wall_follow_timer = CustomTimer(0.5, self.wall_following, autostart=True, repeat=False)
+            self.wall_follow_active = True
+            logging.info("Wall following started.")
+    
+
+    @require_robot
+    def align_time(self):
+        """Rotates robot pi/2 degrees. Unused but keeping just in case."""
+        sensors = self.sensor_reading()
+
+        if sensors.light_bumper_right < 10 and sensors.light_bumper_front_right < 10:
+            # Clockwise turn in place 
+            self._set_motion(0, -VELOCITY_STEPS * 2)
+        else:
+            # Counterclockwise turn in place
+            self._set_motion(0, VELOCITY_STEPS * 2)
+        
+        # Rotate pi/2 degrees
+        time.sleep(math.pi * (235/228))
+
+        # Stop robot (may want to comment this)
+        self._set_motion(0, 0)
+
+
+    @require_robot
+    def align(self):
+        """Aligns robot so right side is parallel to the wall."""
+        sensors = self.sensor_reading()
+
+        if sensors.light_bumper_right < 10 and sensors.light_bumper_front_right < 10:
+            # Clockwise turn in place 
+            self._set_motion(0, -VELOCITY_STEPS * 2)
+        else:
+            # Counterclockwise turn in place
+            self._set_motion(0, VELOCITY_STEPS * 2)
+        
+        while True:
+            sensors = self.sensor_reading()
+
+            # Rotate until no wall is detected and aligned with wall to the right
+            if not self.wall_detected(sensors) and sensors.light_bumper_right >= SET_POINT:
+                break
+        
+            time.sleep(0.1)
+        
+        # Stop robot (may want to comment this)
+        self._set_motion(0, 0)
+
+
+    @require_robot
+    def drive_to_wall(self):
+        """Drives robot straight and stops right before hitting a wall."""
+        # Start driving robot
+        self._set_motion(VELOCITY_STEPS * 3, 0)
+
+        while True:
+            sensors = self.sensor_reading()
+
+            # Drive until a wall is detected
+            if self.wall_detected(sensors):
+                break
+        
+            time.sleep(0.1)
+        
+        # Stop robot (may want to comment this)
+        self._set_motion(0, 0)
+
+
+    @require_robot
+    def dock_detected(self, sensors):
+        """TODO: Returns true if dock is detected."""
+        # Too sensistive
+        #return True if sensors.ir_opcode > 0 else False
+        pass
+
+
+    @require_robot
+    def sensor_reading(self):
+        """Returns sensor values."""
+        return self.robot.get_sensors()
+    
+    @require_robot
+    def get_front_walls(self, sensors):
+        """Returns front and center light bumper sensors."""
+        return [sensors.light_bumper_center_left, sensors.light_bumper_center_right, 
+                sensors.light_bumper_front_left, sensors.light_bumper_front_right]
+    
+
+    def wall_detected(self, sensors):
+        """Returns true if wall is detected in front of robot based on light bumper sensors."""
+        # Get front and center light bumper sensors
+        wall_sensors = self.get_front_walls(sensors) 
+
+        # Return true if any front or center light bumper sensor value is greater than constant threshold
+        if any(value > WALL_THRESHOLD for value in wall_sensors):
+            return True
+        
+        return False
+    
+
+    def squash(self, uk):
+        """Determines the direction and amount of turn needed given control value.
+
+        To simplify, let's assume we use just a P controller (using the propotional value
+        and none of the others). So,
+            Uk = current error = SET_POINT - LBR,
+        where
+            LBR is the light bumper right sensor value.
+        
+        The value of Uk tells us what turn we need to make:
+            Uk = 0           -->  LBR = SET_POINT      -->  No correction needed, drive straight.
+            Uk = SET_POINT   -->  LBR = 0              -->  No wall detected to the right, BIG RIGHT TURN.
+            Uk = -SET_POINT  -->  LBR = 2 * SET_POINT  -->  Wall too close to the right, BIG LEFT TURN.
+        """
+
+        if uk <= -BIG_TURN_THRESHOLD:
+            # Big left
+            return -20
+        
+        elif uk >= BIG_TURN_THRESHOLD:
+            # Big right
+            return 20
+        
+        elif -BIG_TURN_THRESHOLD < uk < -SMALL_TURN_THRESHOLD:
+            # Small left
+            return -10
+        
+        elif SMALL_TURN_THRESHOLD < uk < BIG_TURN_THRESHOLD:
+            # Small right
+            return 10
+        
+        else:
+            # Going straight
+            return 0
+
+
+    def pid(self, errors, Kp, Ki, Kd, dt):
+        """Basic PID controller for robot wall following."""
+        # Accumulated past errors = change in time * sum of errors
+        integral = errors.sum() * dt
+
+        # Future trend = (current error - previous error) / change in time
+        derivative = (errors.get_current() - errors.get_prev()) / dt
+
+        # Control = (Proportional gain * current error) 
+        #           + (integral gain * accumulated past errors) 
+        #           + (derivative gain * future trend)
+        Uk = Kp * errors.get_current() + Ki * integral + Kd * derivative
+
+        # Return values
+        return Uk, integral, derivative
+
+
+    def wall_following(self):
+        """Drives robot along the wall until dock is detected."""
+
+        # Create a circular error to store the error values
+        errors = CircularArray(5)
+
+        # Gain parameters -- to be tested/changed if needed
+        Kp = 1.0        # Proportional term
+        Ki = 0.01       # Integral term
+        Kd = 0.05       # Derivative term
+        
+        dt = 0.1        # Sample rate
+
+        # Drive to wall and align robot so right side is parallel to wall
+        self.drive_to_wall()
+        self.align()
+
+        while self.wall_follow_active:
+            # Get updated sensor values
+            sensors = self.sensor_reading()
+
+            # Stop if dock is detected
+            # if self.dock_detected(sensors): 
+            #     break
+
+            # Compute current error (baseline value - reading)
+            error = SET_POINT - sensors.light_bumper_right
+            errors.enqueue(error)
+
+            # Get control, integral, and derivative
+            Uk, integral, derivative = self.pid(errors, Kp, Ki, Kd, dt)
+
+            # For debugging
+            print(f'Sensor Reading: {sensors.light_bumper_center_right}, Current Error: {error}\
+                  \nProportional: {Kp * error}\
+                  \nIntegral: {Ki * integral}\
+                  \nDerivative: {Kd * derivative}\
+                  \nControl: {Uk}')
+            
+            # Compute left and right wheel velocities using control
+            #vl = 50 + (self.squash(Uk))
+            #vr = 50 - (self.squash(Uk))
+
+            # Compute left and right wheel velocities (with only P term for right now)...
+            vl = 50 + (self.squash(Kp * error))
+            vr = 50 - (self.squash(Kp * error))
+            
+            # For debugging
+            print(f'\nvl: {vl}, vr: {vr}')
+
+            # Send drive command to robot
+            self.robot.drive_pwm(int(vr), int(vl))
+
+            # Re-align with wall if detected
+            if self.wall_detected(sensors):
+                errors.reset()
+                self.align()
+
+            # Sensor polling rate
+            time.sleep(dt)
+
+        # Stop the robot
+        self._set_motion(0, 0)
+
+        # TEMPORARY -- to stop the robot wall following before docking if needed
+        if not self.wall_follow_active:
+            return
+        
+        # Dock the robot
+        #self.robot.dock()
 
 
 # ----------------------- Main Driver ------------------------------
