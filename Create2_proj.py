@@ -72,7 +72,7 @@ BIG_TURN_THRESHOLD = 500    # Minimum error/control value needed to make a big t
 SMALL_TURN_THRESHOLD = 200  # Minimum error/control value needed to make a small turn
 
 SET_POINT = 500             # Wall following set point for PID
-WALL_THRESHOLD = 600        # Front/center wall light bumper detection threshold
+WALL_THRESHOLD = 500        # Front/center wall light bumper detection threshold
 VELOCITY_STEPS = 28.5       # Velocity controls in steps of 28.5 mm/s
 
 
@@ -370,6 +370,7 @@ class TetheredDriveApp(tk.Tk):
             self.sensor_text.insert(tk.END, sensor_text)
             self.sensor_text.config(state=tk.DISABLED)
     
+
     @require_robot
     def toggle_wall_follow(self):
         """Toggles wall following on/off."""
@@ -384,25 +385,6 @@ class TetheredDriveApp(tk.Tk):
             self.wall_follow_timer = CustomTimer(0.5, self.wall_following, autostart=True, repeat=False)
             self.wall_follow_active = True
             logging.info("Wall following started.")
-    
-
-    @require_robot
-    def align_time(self):
-        """Rotates robot pi/2 degrees. Unused but keeping just in case."""
-        sensors = self.sensor_reading()
-
-        if sensors.light_bumper_right < 10 and sensors.light_bumper_front_right < 10:
-            # Clockwise turn in place 
-            self._set_motion(0, -VELOCITY_STEPS * 2)
-        else:
-            # Counterclockwise turn in place
-            self._set_motion(0, VELOCITY_STEPS * 2)
-        
-        # Rotate pi/2 degrees
-        time.sleep(math.pi * (235/228))
-
-        # Stop robot (may want to comment this)
-        self._set_motion(0, 0)
 
 
     @require_robot
@@ -417,7 +399,7 @@ class TetheredDriveApp(tk.Tk):
             # Counterclockwise turn in place
             self._set_motion(0, VELOCITY_STEPS * 2)
         
-        while True:
+        while self.wall_follow_active:
             sensors = self.sensor_reading()
 
             # Rotate until no wall is detected and aligned with wall to the right
@@ -436,7 +418,7 @@ class TetheredDriveApp(tk.Tk):
         # Start driving robot
         self._set_motion(VELOCITY_STEPS * 3, 0)
 
-        while True:
+        while self.wall_follow_active:
             sensors = self.sensor_reading()
 
             # Drive until a wall is detected
@@ -447,21 +429,14 @@ class TetheredDriveApp(tk.Tk):
         
         # Stop robot (may want to comment this)
         self._set_motion(0, 0)
-
-
-    @require_robot
-    def dock_detected(self, sensors):
-        """TODO: Returns true if dock is detected."""
-        # Too sensistive
-        #return True if sensors.ir_opcode > 0 else False
-        pass
-
+        
 
     @require_robot
     def sensor_reading(self):
         """Returns sensor values."""
         return self.robot.get_sensors()
     
+
     @require_robot
     def get_front_walls(self, sensors):
         """Returns front and center light bumper sensors."""
@@ -469,6 +444,7 @@ class TetheredDriveApp(tk.Tk):
                 sensors.light_bumper_front_left, sensors.light_bumper_front_right]
     
 
+    @require_robot
     def wall_detected(self, sensors):
         """Returns true if wall is detected in front of robot based on light bumper sensors."""
         # Get front and center light bumper sensors
@@ -481,6 +457,7 @@ class TetheredDriveApp(tk.Tk):
         return False
     
 
+    @require_robot
     def squash(self, uk):
         """Determines the direction and amount of turn needed given control value.
 
@@ -495,8 +472,13 @@ class TetheredDriveApp(tk.Tk):
             Uk = SET_POINT   -->  LBR = 0              -->  No wall detected to the right, BIG RIGHT TURN.
             Uk = -SET_POINT  -->  LBR = 2 * SET_POINT  -->  Wall too close to the right, BIG LEFT TURN.
         """
-
-        if uk <= -BIG_TURN_THRESHOLD:
+        if uk <= -1000:
+            return -30
+        
+        elif uk >= 1000:
+            return 30
+        
+        elif uk <= -BIG_TURN_THRESHOLD:
             # Big left
             return -20
         
@@ -517,6 +499,7 @@ class TetheredDriveApp(tk.Tk):
             return 0
 
 
+    @require_robot
     def pid(self, errors, Kp, Ki, Kd, dt):
         """Basic PID controller for robot wall following."""
         # Accumulated past errors = change in time * sum of errors
@@ -528,22 +511,43 @@ class TetheredDriveApp(tk.Tk):
         # Control = (Proportional gain * current error) 
         #           + (integral gain * accumulated past errors) 
         #           + (derivative gain * future trend)
+
         Uk = Kp * errors.get_current() + Ki * integral + Kd * derivative
 
         # Return values
         return Uk, integral, derivative
+    
+
+    @require_robot
+    def dock_detected(self, sensors):
+        """TODO: Returns true if dock is detected."""
+        # Too sensistive ?
+        # if sensors.ir_opcode == 161 \
+        #     or sensors.ir_opcode == 165 \
+        #     or sensors.ir_opcode == 169 \
+        #     or sensors.ir_opcode == 173:
+        #     return True
+        # return False
+        pass
 
 
+    @require_robot
+    def dock_robot(self, sensors):
+        # TODO: Docks the robot when detected
+        pass
+
+
+    @require_robot
     def wall_following(self):
         """Drives robot along the wall until dock is detected."""
 
         # Create a circular error to store the error values
-        errors = CircularArray(5)
+        errors = CircularArray(10)
 
         # Gain parameters -- to be tested/changed if needed
         Kp = 1.0        # Proportional term
-        Ki = 0.01       # Integral term
-        Kd = 0.05       # Derivative term
+        Ki = 0.001       # Integral term
+        Kd = 0.015       # Derivative term
         
         dt = 0.1        # Sample rate
 
@@ -556,8 +560,8 @@ class TetheredDriveApp(tk.Tk):
             sensors = self.sensor_reading()
 
             # Stop if dock is detected
-            # if self.dock_detected(sensors): 
-            #     break
+            if self.dock_detected(sensors): 
+                break
 
             # Compute current error (baseline value - reading)
             error = SET_POINT - sensors.light_bumper_right
@@ -565,24 +569,18 @@ class TetheredDriveApp(tk.Tk):
 
             # Get control, integral, and derivative
             Uk, integral, derivative = self.pid(errors, Kp, Ki, Kd, dt)
+            
+            # Compute left and right wheel velocities using control
+            vl = 50 + (self.squash(Uk))
+            vr = 50 - (self.squash(Uk))
 
             # For debugging
-            print(f'Sensor Reading: {sensors.light_bumper_center_right}, Current Error: {error}\
+            print(f'Sensor Reading: {sensors.light_bumper_right}, Current Error: {error}\
                   \nProportional: {Kp * error}\
                   \nIntegral: {Ki * integral}\
                   \nDerivative: {Kd * derivative}\
-                  \nControl: {Uk}')
-            
-            # Compute left and right wheel velocities using control
-            #vl = 50 + (self.squash(Uk))
-            #vr = 50 - (self.squash(Uk))
-
-            # Compute left and right wheel velocities (with only P term for right now)...
-            vl = 50 + (self.squash(Kp * error))
-            vr = 50 - (self.squash(Kp * error))
-            
-            # For debugging
-            print(f'\nvl: {vl}, vr: {vr}')
+                  \nControl: {Uk}\
+                  \nvl: {vl}, vr: {vr}')
 
             # Send drive command to robot
             self.robot.drive_pwm(int(vr), int(vl))
@@ -603,7 +601,7 @@ class TetheredDriveApp(tk.Tk):
             return
         
         # Dock the robot
-        #self.robot.dock()
+        self.dock_robot()
 
 
 # ----------------------- Main Driver ------------------------------
