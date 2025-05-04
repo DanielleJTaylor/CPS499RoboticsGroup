@@ -619,7 +619,7 @@ class TetheredDriveApp(tk.Tk):
                     logging.warning("Bump detected. Docking failed.")
 
                     # Back up
-                    self._set_motion(velocity=-150, rotation=0)
+                    self.align()
                     time.sleep(1.5)
 
                     # Stop
