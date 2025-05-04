@@ -184,6 +184,7 @@ class TetheredDriveApp(tk.Tk):
             "R": "Reset",
             "B": "Sensor Dump",
             "W": "Wall Following",
+            "D": "Dock Robot",
             "Space": "Beep",
             "O": "Toggle Sensor Polling",
             "Arrows": "Motion",
@@ -204,6 +205,7 @@ class TetheredDriveApp(tk.Tk):
             "SPACE": lambda: self._beep_song(),
             "B": lambda: logging.info(self._format_sensor_data(self.robot.get_sensors())),
             "W": lambda: self.toggle_wall_follow(),
+            "D": lambda: self.dock_robot(),
             "O": self.toggle_sensor_polling,
             "UP": lambda: self._set_motion(velocity=VELOCITYCHANGE),
             "DOWN": lambda: self._set_motion(velocity=-VELOCITYCHANGE),
@@ -516,25 +518,164 @@ class TetheredDriveApp(tk.Tk):
 
         # Return values
         return Uk, integral, derivative
-    
+
+
 
     @require_robot
     def dock_detected(self, sensors):
         """TODO: Returns true if dock is detected."""
-        # Too sensistive ?
-        # if sensors.ir_opcode == 161 \
-        #     or sensors.ir_opcode == 165 \
-        #     or sensors.ir_opcode == 169 \
-        #     or sensors.ir_opcode == 173:
-        #     return True
-        # return False
-        pass
+        if sensors.ir_opcode_right >= 161:
+            return True
+
+        return False
+
+    @require_robot
+    def find_and_approach_dock(self):
+        """
+        Spins in place until dock is detected on the right side,
+        then approaches it.
+        """
+        dt = 0.1  # sensor check interval
+        MAX_SEARCH_TIME = 15  # seconds
+        start_time = time.time()
+
+        logging.info("Searching for dock on the right side...")
+
+        while True:
+            sensors = self.sensor_reading()
+
+            # If dock signal appears on right side
+            if sensors.ir_opcode_right > 169:
+                logging.info(f"Dock detected on right side: Opcode {sensors.ir_opcode_right}")
+                break
+
+            # Spin in place counter-clockwise
+            self._set_motion(velocity=0, rotation=VELOCITY_STEPS)
+
+            # Timeout safety
+            if time.time() - start_time > MAX_SEARCH_TIME:
+                logging.warning("Dock not found during spin. Timing out.")
+                self._set_motion(0, 0)
+                return
+
+            time.sleep(dt)
+
+
 
 
     @require_robot
-    def dock_robot(self, sensors):
-        # TODO: Docks the robot when detected
-        pass
+    def dock_robot(self):
+        """
+        Drives toward the dock using IR opcode signals until charging begins.
+        Uses circular array to smooth steering decisions.
+        Rotates until dock IR is detected, then attempts to dock up to 2 times.
+        """
+        from createlib.circular_array import CircularArray
+
+        MAX_ATTEMPTS = 4
+        dt = 0.1
+        attempt = 0
+        errors = CircularArray(10)
+
+        logging.info("Scanning for IR dock signal...")
+
+        # Step 1: Rotate in place until any IR opcode is detected
+        self.find_and_approach_dock()
+        time.sleep(0.1)
+
+        # Step 2: Docking attempts
+        while attempt < MAX_ATTEMPTS:
+            logging.info(f"Docking attempt {attempt + 1}...")
+
+            # Optional sweep to orient toward dock
+            self._set_motion(velocity=-30, rotation=VELOCITY_STEPS * 3)
+            time.sleep(1.0)
+            self._set_motion(velocity=30, rotation=0)
+            time.sleep(1.5)
+            self._set_motion(velocity=0, rotation=-30)
+
+            start_time = time.time()
+            last_signal_time = time.time()  # <-- should be defined here
+
+
+            while True:
+                sensors = self.sensor_reading()
+
+                # Enqueue IR readings
+                errors.enqueue(sensors.ir_opcode)
+                errors.enqueue(sensors.ir_opcode_left)
+                errors.enqueue(sensors.ir_opcode_right)
+
+
+                # Success: charging
+                if sensors.charger_state == 2:
+                    self._set_motion(0, 0)
+                    logging.info("Docking successful. Charging started.")
+                    return
+
+                # Bump = bad approach → back up and retry
+                bumps = sensors.bumps_wheeldrops
+                if bumps.bump_left or bumps.bump_right:
+                    logging.warning("Bump detected. Docking failed.")
+
+                    # Back up
+                    self._set_motion(velocity=-150, rotation=0)
+                    time.sleep(1.5)
+
+                    # Stop
+                    self._set_motion(0, 0)
+                    time.sleep(0.5)
+
+                    # 🔁 Add this line:
+                    self.find_and_approach_dock()
+                    break
+                
+
+                # Check for IR signal presence
+                if any(op in [161, 164, 165, 168, 169, 172, 173] for op in [sensors.ir_opcode, sensors.ir_opcode_left, sensors.ir_opcode_right]):
+                    last_signal_time = time.time()
+
+                # Lost signal recovery
+                if time.time() - last_signal_time > 11:
+                    logging.warning("Lost dock signal. Reacquiring...")
+                    self._set_motion(0, 0)
+                    time.sleep(0.5)
+                    self.find_and_approach_dock()
+                    break
+
+
+                # Steering Logic (Right side only)
+                if sensors.ir_opcode_right == 173:
+                    self._set_motion(35, 0)
+                elif sensors.ir_opcode_right == 172:
+                    self._set_motion(30, 0)
+                elif sensors.ir_opcode_right in [168, 169]:
+                    self._set_motion(20, -VELOCITY_STEPS)
+                elif sensors.ir_opcode_right in [161, 164, 165]:
+                    self._set_motion(20, VELOCITY_STEPS)
+                elif sensors.ir_opcode_right:
+                    self._set_motion(15, 0)
+                else:
+                    self._set_motion(velocity=0, rotation=VELOCITY_STEPS)
+
+                time.sleep(dt)
+
+
+                # Timeout
+                if time.time() - start_time > DOCK_TIMEOUT:
+                    self.find_and_approach_dock()
+                    time.sleep(0.1)
+
+                time.sleep(dt)
+
+
+            attempt += 1
+
+        # Final failure
+        self._set_motion(0, 0)
+        logging.error("Docking failed after all attempts.")
+        messagebox.showwarning("Docking Failed", "The robot could not dock after retries.")
+
 
 
     @require_robot
