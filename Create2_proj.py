@@ -72,7 +72,7 @@ BIG_TURN_THRESHOLD = 500    # Minimum error/control value needed to make a big t
 SMALL_TURN_THRESHOLD = 200  # Minimum error/control value needed to make a small turn
 
 SET_POINT = 500             # Wall following set point for PID
-WALL_THRESHOLD = 500        # Front/center wall light bumper detection threshold
+WALL_THRESHOLD = 600        # Front/center wall light bumper detection threshold
 VELOCITY_STEPS = 28.5       # Velocity controls in steps of 28.5 mm/s
 
 
@@ -407,6 +407,10 @@ class TetheredDriveApp(tk.Tk):
             # Rotate until no wall is detected and aligned with wall to the right
             if not self.wall_detected(sensors) and sensors.light_bumper_right >= SET_POINT:
                 break
+
+            # Rotate until no wall is detected
+            if not self.wall_detected(sensors) and sensors.light_bumper_right <= 10:
+                break
         
             time.sleep(0.1)
         
@@ -520,11 +524,10 @@ class TetheredDriveApp(tk.Tk):
         return Uk, integral, derivative
 
 
-
     @require_robot
     def dock_detected(self, sensors):
         """TODO: Returns true if dock is detected."""
-        if sensors.ir_opcode_right >= 161:
+        if sensors.ir_opcode >= 161:
             return True
 
         return False
@@ -536,111 +539,99 @@ class TetheredDriveApp(tk.Tk):
         Drives toward the dock using IR opcode signals until dock is reached.
         Uses green and red buoy logic to steer.
         """
-        self._set_motion(velocity=-30, rotation=VELOCITY_STEPS * 3)   
-        time.sleep(1.0)
-        self._set_motion(velocity=30, rotation=0)
-        time.sleep(1.5)
-        self._set_motion(velocity=0, rotation=-30)
-
-        # Create a circular error to store the error values
-        errors = CircularArray(10)
-
+        # Create a circular ir_values for storing past ir values
+        ir_values = CircularArray(10)
         dt = 0.1        # Sample rate
 
+        # For debugging
         logging.info("Docking started...")
-        
+
+        # Drive backwards, curving counter clockwise (assuming here that there is nothing behind the roomba, very scientific)
+        self._set_motion(velocity=-30, rotation=VELOCITY_STEPS * 3)   
+        time.sleep(1.0)
+
+        # Start going forward for 1.5 seconds
+        self._set_motion(velocity=30, rotation=0)
+        time.sleep(1.5)
+
+        # Rotate counter clockwise for signal detection
+        self._set_motion(velocity=0, rotation=-30)
 
         while True:
+            # Get updated sensor values
             sensors = self.sensor_reading()
+
+            # Break if charging or on home base or bumps detected (very scientific)
             c = sensors.charger_available
             b = sensors.bumps_wheeldrops
             if sensors.charger_state == 2 or c.home_base or b.bump_left or b.bump_right:
                 break
 
-            
+            # Using all ir sensors because i am in pain
             opcode = sensors.ir_opcode
             left = sensors.ir_opcode_left
             right = sensors.ir_opcode_right
 
-            errors.enqueue(opcode)
-            errors.enqueue(left)
-            errors.enqueue(right)
+            # Add each ir sensor value to the ir values queue since sometimes the sensors return 0 and
+            # we don't really want that impacting us.
+            ir_values.enqueue(opcode)
+            ir_values.enqueue(left)
+            ir_values.enqueue(right)
 
-
-            print(errors)
-            
-            if any(value == 172 for value in errors.queue):
-                if left == 172 and right == 172:
+            # Red and Green buoy both detected by some ir sensor
+            if any(value == 172 for value in ir_values.queue):
+                # If the current left value is detecting both, go straight (just assuming we are aligned here)
+                if left == 172:
                     self._set_motion(velocity=30, rotation=0)
-                elif left == 172:
-                    self._set_motion(velocity=30, rotation=VELOCITY_STEPS * 2)
+                
+                # If only the current right value is detecting both, curve clockwise
                 elif right == 172:
                     self._set_motion(velocity=30, rotation=-VELOCITY_STEPS * 2)
+                
+                # If only omni is sensing it just continue and skip the sleep
                 else:
                     continue
-            elif any(value == 168 or value == 169 for value in errors.queue):
+            # Red buoy in the queue, drive forward
+            elif any(value == 168 or value == 169 for value in ir_values.queue):
                 self._set_motion(velocity=30, rotation=0)
-            elif any(value == 164 or value == 165 for value in errors.queue):
+
+            # Green buoy only in the queue, curve clockwise backwards
+            elif any(value == 164 or value == 165 for value in ir_values.queue):
                 self._set_motion(velocity=-30, rotation=-VELOCITY_STEPS * 3)     
-            elif any(value == 161 for value in errors.queue):
-                self._set_motion(velocity=30, rotation=VELOCITY_STEPS)
-            elif all(value == 0 for value in errors.queue):
-                self._set_motion(velocity=30, rotation=-VELOCITY_STEPS)
-
-            # # Full signal detected (close to dock)
-            # if right == 173:
-            #     logging.info("Full dock signal detected. Driving straight in.")
-            #     self._set_motion(velocity=50, rotation=0)
-
-            # # Red and Green buoy
-            # elif right == 172 or right == 161:
-            #     logging.info("Red and Green Buoy - On path. Moving forward.")
-            #     self._set_motion(velocity=50, rotation=0)
             
-            # elif right == 161:
-            #     logging.info("Red and Green Buoy - On path. Moving forward.")
-            #     self._set_motion(velocity=0, rotation=VELOCITY_STEPS)
-
-            # # Red Buoy only → Veer right
-            # elif right == 168 or right == 169:
-            #     if left == 168 or left == 169:
-            #         logging.info("Red Buoy detected - Steering right.")
-            #         self._set_motion(velocity=30, rotation=0)
-            #     else:
-            #         logging.info("Red Buoy detected - Steering right.")
-            #         self._set_motion(velocity=30, rotation=VELOCITY_STEPS)
-
-            # # Green Buoy only → Veer left
-            # elif opcode == 164 or opcode == 165:
-            #     logging.info("Green Buoy detected - Steering left.")
-            #     self._set_motion(velocity=30, rotation=VELOCITY_STEPS)
+            # Force field in the queue, curve counter clockwise forwards
+            elif any(value == 161 for value in ir_values.queue):
+                self._set_motion(velocity=30, rotation=VELOCITY_STEPS)
+            
+            # Nothing detected, curve clockwise forwards
+            elif all(value == 0 for value in ir_values.queue):
+                self._set_motion(velocity=30, rotation=-VELOCITY_STEPS)
 
             # Sensor polling rate
             time.sleep(dt)
 
-        # ALIGNMENT HERE
-        #while not c.home_base:
-            # self._set_motion(velocity=0, rotation=-VELOCITY_STEPS)
-            # time.sleep(0.25)
-            # self._set_motion(velocity=0, rotation=0)
-            # time.sleep(0.5)
-
-            # if c.home_base:
-            #     break
-
-            # self._set_motion(velocity=0, rotation=VELOCITY_STEPS)
-            # time.sleep(0.25)
-
-            # if c.home_base:
-            #     break
-
-            # self._set_motion(velocity=0, rotation=-VELOCITY_STEPS)
-            # time.sleep(0.5)
- 
-
-        # Final stop
+        # Stop robot and sleep for a second
         self._set_motion(0, 0)
-        logging.info("Docking complete or timeout reached.")
+        time.sleep(1)
+
+        # Get updated sensor values
+        sensors = self.sensor_reading()
+        c = sensors.charger_available
+
+        # Check if on the home base
+        while not c.home_base:
+            # Rotate counter clockwise (again, very scientific)
+            self._set_motion(0, VELOCITY_STEPS)
+            time.sleep(0.2)
+
+            # Get updated sensor values
+            sensors = self.sensor_reading()
+            c = sensors.charger_available
+
+        # Stop moving the robot and set to safe mode
+        self._set_motion(0, 0)
+        self.robot.safe()
+        logging.info("Docking complete.")
 
 
     @require_robot
@@ -653,7 +644,7 @@ class TetheredDriveApp(tk.Tk):
         # Gain parameters -- to be tested/changed if needed
         Kp = 1.0        # Proportional term
         Ki = 0.001       # Integral term
-        Kd = 0.015       # Derivative term
+        Kd = 0.005       # Derivative term
         
         dt = 0.1        # Sample rate
 
@@ -708,6 +699,12 @@ class TetheredDriveApp(tk.Tk):
         
         # Dock the robot
         self.dock_robot()
+
+        # Stop wall follow mode
+        self.wall_follow_timer.stop()
+        self.wall_follow_timer = None
+        self.wall_follow_active = False
+        logging.info("Wall following stopped.")
 
 
 # ----------------------- Main Driver ------------------------------
